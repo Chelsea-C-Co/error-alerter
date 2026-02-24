@@ -1,7 +1,9 @@
 module ErrorAlerter
   class Configuration
     attr_accessor :webhook_url, :dedup_ttl, :max_backtrace_lines, :max_error_length,
-                  :app_name, :redis, :logger
+                  :app_name, :redis, :logger,
+                  :health_check_disk_threshold, :health_check_ram_threshold,
+                  :health_check_docker_threshold
 
     def initialize
       @webhook_url = nil
@@ -11,6 +13,9 @@ module ErrorAlerter
       @app_name = nil
       @redis = nil
       @logger = nil
+      @health_check_disk_threshold = 80    # percentage
+      @health_check_ram_threshold = 85     # percentage
+      @health_check_docker_threshold = 5   # GB
     end
 
     def enabled?

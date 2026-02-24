@@ -2,6 +2,7 @@ require_relative 'error_alerter/version'
 require_relative 'error_alerter/configuration'
 require_relative 'error_alerter/slack_client'
 require_relative 'error_alerter/notifier'
+require_relative 'error_alerter/health_check'
 require_relative 'error_alerter/sidekiq_plugin'
 require_relative 'error_alerter/rails_plugin'
 
