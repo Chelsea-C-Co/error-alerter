@@ -213,4 +213,87 @@ class NotifierTest < Minitest::Test
     source_field = payload[:blocks][1][:fields].find { |f| f[:text].include?("Source") }
     assert_includes source_field[:text], "backfill:run"
   end
+
+  # --- Dedup: default flat behavior unchanged [sc-493] ---
+
+  def test_dedup_suppresses_repeat_within_window
+    assert_equal false, build_notifier.send(:deduplicated?), "first occurrence alerts"
+    assert_equal true,  build_notifier.send(:deduplicated?), "repeat is suppressed"
+  end
+
+  def test_default_payload_has_no_attachments_or_count
+    payload = build_notifier.send(:build_payload)
+    assert_equal ":rotating_light:", payload[:icon_emoji]
+    assert payload.key?(:blocks)
+    refute payload.key?(:attachments)
+  end
+
+  # --- Severity (opt-in) [sc-493] ---
+
+  def test_severity_renders_colored_attachment_and_emoji
+    ErrorAlerter.configure { |c| c.severity_classifier = ->(klass, _src, _msg) { klass == "Timeout::Error" ? :transient : :critical } }
+
+    crit = build_notifier(error_class: "RuntimeError").send(:build_payload)
+    assert_equal ":rotating_light:", crit[:icon_emoji]
+    assert_equal "#E01E5A", crit[:attachments][0][:color]
+    refute crit.key?(:blocks)
+
+    trans = build_notifier(error_class: "Timeout::Error").send(:build_payload)
+    assert_equal ":large_blue_circle:", trans[:icon_emoji]
+    assert_equal "#36C5F0", trans[:attachments][0][:color]
+  end
+
+  def test_critical_mention_prepended_only_for_critical
+    ErrorAlerter.configure do |c|
+      c.severity_classifier = ->(klass, _s, _m) { klass == "FatalError" ? :critical : :warning }
+      c.critical_mention = "<!here>"
+    end
+
+    crit_blocks = build_notifier(error_class: "FatalError").send(:build_blocks)
+    assert_equal "<!here>", crit_blocks[0][:text][:text]
+
+    warn_blocks = build_notifier(error_class: "RuntimeError").send(:build_blocks)
+    assert_equal "header", warn_blocks[0][:type], "non-critical alerts are not prefixed with the mention"
+  end
+
+  def test_bad_severity_value_falls_back_to_warning
+    ErrorAlerter.configure { |c| c.severity_classifier = ->(*) { :nonsense } }
+    assert_equal :warning, build_notifier.send(:severity)
+  end
+
+  # --- Burst/backoff dedup (opt-in) [sc-493] ---
+
+  def test_backoff_counts_suppressed_occurrences_in_next_alert
+    ErrorAlerter.configure { |c| c.backoff_schedule = [300, 900] }
+    redis = ErrorAlerter.configuration.redis
+
+    assert_equal false, build_notifier.send(:deduplicated?) # alert 1
+    assert_equal true,  build_notifier.send(:deduplicated?) # suppressed (+1)
+    assert_equal true,  build_notifier.send(:deduplicated?) # suppressed (+1)
+
+    # Simulate the suppression window expiring, then the next alert reports the suppressed count.
+    fp = build_notifier.send(:fingerprint)
+    redis.store.delete("error_alerter:#{fp}")
+    n = build_notifier
+    assert_equal false, n.send(:deduplicated?)
+    assert_equal 2, n.instance_variable_get(:@suppressed_count)
+    ctx = n.send(:build_blocks).find { |b| b[:type] == "context" }
+    assert_includes ctx[:elements][0][:text], "2 more occurrence"
+  end
+
+  def test_suppression_ttl_escalates_with_tier
+    ErrorAlerter.configure { |c| c.backoff_schedule = [300, 900, 3600] }
+    n = build_notifier
+    redis = ErrorAlerter.configuration.redis
+    assert_equal 300,  n.send(:suppression_ttl, redis)
+    assert_equal 900,  n.send(:suppression_ttl, redis)
+    assert_equal 3600, n.send(:suppression_ttl, redis)
+    assert_equal 3600, n.send(:suppression_ttl, redis), "clamps at the last entry"
+  end
+
+  private
+
+  def build_notifier(error_class: "RuntimeError", error_message: "boom")
+    ErrorAlerter::Notifier.new(worker_class: "TestWorker", error_class: error_class, error_message: error_message)
+  end
 end
