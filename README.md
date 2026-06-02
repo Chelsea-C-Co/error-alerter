@@ -243,6 +243,27 @@ Send the alert. Returns `true` on success, `false` if disabled, deduplicated, or
 | `app_name` | String | nil | Prefix for Slack header (e.g., "CRM Middleware"). |
 | `redis` | Object | nil | Redis client responding to `.call(*args)`. Nil disables dedup. |
 | `logger` | Logger | nil | Falls back to `Rails.logger` if available. |
+| `severity_classifier` | Proc | nil | `->(error_class, source_detail, message) { :critical \| :warning \| :transient }`. When set, alerts render with a colored attachment border + severity emoji. Nil ⇒ unchanged (red siren, no border). |
+| `critical_mention` | String | nil | Prepended to `:critical` alerts (e.g. `"<!here>"`). |
+| `backoff_schedule` | Array | nil | Escalating suppression TTLs in seconds, e.g. `[300, 1800, 7200]`. A flapping error alerts, then is suppressed for progressively longer windows, and the next alert reports how many occurrences were suppressed. Nil ⇒ flat `dedup_ttl`. |
+
+### Severity + backoff (opt-in)
+
+```ruby
+ErrorAlerter.configure do |config|
+  config.severity_classifier = lambda do |error_class, _source, _message|
+    case error_class
+    when /Timeout|ConnectionFailed|TooManyRequests/ then :transient
+    when /Fatal|Security|DataLoss/                  then :critical
+    else :warning
+    end
+  end
+  config.critical_mention  = "<!here>"
+  config.backoff_schedule  = [300, 1800, 7200] # 5m → 30m → 2h
+end
+```
+
+Both default to nil, so existing setups behave exactly as before until they opt in.
 
 ## Testing
 
